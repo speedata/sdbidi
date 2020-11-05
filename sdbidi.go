@@ -193,7 +193,10 @@ func (p *Paragraph) Order() (Ordering, error) {
 	if p.options.defaultDirection == RightToLeft {
 		lvl = 1
 	}
-	para := newParagraph(p.types, p.pairTypes, p.pairValues, lvl)
+	para, err := newParagraph(p.types, p.pairTypes, p.pairValues, lvl)
+	if err != nil {
+		return Ordering{}, err
+	}
 
 	levels := para.getLevels([]int{len(p.types)})
 
@@ -205,7 +208,10 @@ func (p *Paragraph) Order() (Ordering, error) {
 // ending at the given positions in the original text.
 func (p *Paragraph) Line(start, end int) (Ordering, error) {
 	lineTypes := p.types[start:end]
-	para := newParagraph(lineTypes, p.pairTypes[start:end], p.pairValues[start:end], -1)
+	para, err := newParagraph(lineTypes, p.pairTypes[start:end], p.pairValues[start:end], -1)
+	if err != nil {
+		return Ordering{}, err
+	}
 	levels := para.getLevels([]int{len(lineTypes)})
 	o := calculateOrdering(levels, p.runes[start:end])
 	return o, nil
