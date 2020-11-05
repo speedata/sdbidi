@@ -5,8 +5,6 @@ import (
 	"fmt"
 )
 
-// I took the file bidi.go from the above and tried to fill out the "unimplemented" methods.
-
 // A Direction indicates the overall flow of text.
 type Direction int
 
@@ -30,7 +28,9 @@ const (
 	Neutral
 )
 
-type options struct{}
+type options struct {
+	defaultDirection Direction
+}
 
 // An Option is an option for Bidi processing.
 type Option func(*options)
@@ -47,14 +47,53 @@ type Option func(*options)
 // DefaultDirection sets the default direction for a Paragraph. The direction is
 // overridden if the text contains directional characters.
 func DefaultDirection(d Direction) Option {
-	panic("unimplemented")
+	return func(opts *options) {
+		opts.defaultDirection = d
+	}
 }
 
 // A Paragraph holds a single Paragraph for Bidi processing.
 type Paragraph struct {
-	p []byte
-	o Ordering
-	// buffers
+	p          []byte
+	o          Ordering
+	opts       []Option
+	types      []Class
+	pairTypes  []bracketType
+	pairValues []rune
+	runes      []rune
+	options    options
+}
+
+func (p *Paragraph) prepareInput() (n int, err error) {
+	p.runes = bytes.Runes(p.p)
+	bytecount := 0
+	// clear slices from previous SetString or SetBytes
+	p.pairTypes = nil
+	p.pairValues = nil
+	p.types = nil
+
+	for _, r := range p.runes {
+		props, i := LookupRune(r)
+		bytecount += i
+		cls := props.Class()
+		if cls == B {
+			return bytecount, nil
+		}
+		p.types = append(p.types, cls)
+		if props.IsOpeningBracket() {
+			p.pairTypes = append(p.pairTypes, bpOpen)
+			p.pairValues = append(p.pairValues, r)
+		} else if props.IsBracket() {
+			// this must be a closing bracket,
+			// since IsOpeningBracket is not true
+			p.pairTypes = append(p.pairTypes, bpClose)
+			p.pairValues = append(p.pairValues, r)
+		} else {
+			p.pairTypes = append(p.pairTypes, bpNone)
+			p.pairValues = append(p.pairValues, 0)
+		}
+	}
+	return bytecount, nil
 }
 
 // SetBytes configures p for the given paragraph text. It replaces text
@@ -64,7 +103,8 @@ type Paragraph struct {
 // given.
 func (p *Paragraph) SetBytes(b []byte, opts ...Option) (n int, err error) {
 	p.p = b
-	return len(b), nil
+	p.opts = opts
+	return p.prepareInput()
 }
 
 // SetString configures p for the given paragraph text. It replaces text
@@ -74,7 +114,8 @@ func (p *Paragraph) SetBytes(b []byte, opts ...Option) (n int, err error) {
 // given.
 func (p *Paragraph) SetString(s string, opts ...Option) (n int, err error) {
 	p.p = []byte(s)
-	return len(p.p), nil
+	p.opts = opts
+	return p.prepareInput()
 }
 
 // IsLeftToRight reports whether the principle direction of rendering for this
@@ -91,48 +132,32 @@ func (p *Paragraph) Direction() Direction {
 	return p.o.Direction()
 }
 
+// TODO: what happens if the position is > len(input)? This should return an error.
+
 // RunAt reports the Run at the given position of the input text.
 //
 // This method can be used for computing line breaks on paragraphs.
 func (p *Paragraph) RunAt(pos int) Run {
-	panic("unimplemented")
-}
-
-// Order computes the visual ordering of all the runs in a Paragraph.
-func (p *Paragraph) Order() (Ordering, error) {
-	types := []Class{}
-	pairTypes := []bracketType{}
-	pairValues := []rune{}
-	runes := bytes.Runes(p.p)
-
-	for _, r := range runes {
-		props, _ := LookupRune(r)
-		types = append(types, props.Class())
-		switch r {
-		case '(', '[', '{':
-			pairTypes = append(pairTypes, bpOpen)
-			pairValues = append(pairValues, r)
-		case ')', ']', '}':
-			pairTypes = append(pairTypes, bpClose)
-			pairValues = append(pairValues, r)
-		default:
-			pairTypes = append(pairTypes, bpNone)
-			pairValues = append(pairValues, 0)
+	c := 0
+	runNumber := 0
+	for i, r := range p.o.runes {
+		c += len(r)
+		if pos < c {
+			runNumber = i
 		}
 	}
+	return p.o.Run(runNumber)
+}
 
-	if len(types) == 0 {
-		return Ordering{}, fmt.Errorf("Cannot order empty string")
-	}
-	para := newParagraph(types, pairTypes, pairValues, -1)
-	levels := para.getLevels([]int{len(types)})
-
+func calculateOrdering(levels []level, runes []rune) Ordering {
 	var curDir Direction
 
 	prevDir := Neutral
 	prevI := 0
 
 	o := Ordering{}
+	// lvl = 0,2,4,...: left to right
+	// lvl = 1,3,5,...: right to left
 	for i, lvl := range levels {
 		if lvl%2 == 0 {
 			curDir = LeftToRight
@@ -143,6 +168,7 @@ func (p *Paragraph) Order() (Ordering, error) {
 			if i > 0 {
 				o.runes = append(o.runes, runes[prevI:i])
 				o.directions = append(o.directions, prevDir)
+				o.startpos = append(o.startpos, prevI)
 			}
 			prevI = i
 			prevDir = curDir
@@ -150,14 +176,39 @@ func (p *Paragraph) Order() (Ordering, error) {
 	}
 	o.runes = append(o.runes, runes[prevI:])
 	o.directions = append(o.directions, prevDir)
-	p.o = o
-	return o, nil
+	o.startpos = append(o.startpos, prevI)
+	return o
+}
+
+// Order computes the visual ordering of all the runs in a Paragraph.
+func (p *Paragraph) Order() (Ordering, error) {
+	if len(p.types) == 0 {
+		return Ordering{}, fmt.Errorf("Cannot order empty paragraph")
+	}
+
+	for _, fn := range p.opts {
+		fn(&p.options)
+	}
+	lvl := level(-1)
+	if p.options.defaultDirection == RightToLeft {
+		lvl = 1
+	}
+	para := newParagraph(p.types, p.pairTypes, p.pairValues, lvl)
+
+	levels := para.getLevels([]int{len(p.types)})
+
+	p.o = calculateOrdering(levels, p.runes)
+	return p.o, nil
 }
 
 // Line computes the visual ordering of runs for a single line starting and
 // ending at the given positions in the original text.
 func (p *Paragraph) Line(start, end int) (Ordering, error) {
-	panic("unimplemented")
+	lineTypes := p.types[start:end]
+	para := newParagraph(lineTypes, p.pairTypes[start:end], p.pairValues[start:end], -1)
+	levels := para.getLevels([]int{len(lineTypes)})
+	o := calculateOrdering(levels, p.runes[start:end])
+	return o, nil
 }
 
 // An Ordering holds the computed visual order of runs of a Paragraph. Calling
@@ -166,6 +217,7 @@ func (p *Paragraph) Line(start, end int) (Ordering, error) {
 type Ordering struct {
 	runes      [][]rune
 	directions []Direction
+	startpos   []int
 }
 
 // Direction reports the directionality of the runs.
@@ -185,6 +237,7 @@ func (o *Ordering) Run(i int) Run {
 	r := Run{
 		runes:     o.runes[i],
 		direction: o.directions[i],
+		startpos:  o.startpos[i],
 	}
 	return r
 }
@@ -200,6 +253,7 @@ func (o *Ordering) Run(i int) Run {
 type Run struct {
 	runes     []rune
 	direction Direction
+	startpos  int
 }
 
 // String returns the text of the run in its original order.
@@ -225,7 +279,7 @@ func (r *Run) Direction() Direction {
 // Position of the Run within the text passed to SetBytes or SetString of the
 // originating Paragraph value.
 func (r *Run) Pos() (start, end int) {
-	panic("unimplemented")
+	return r.startpos, r.startpos + len(r.runes) - 1
 }
 
 // AppendReverse reverses the order of characters of in, appends them to out,
