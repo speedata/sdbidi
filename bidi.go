@@ -1,9 +1,26 @@
+// Copyright 2015 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+//go:generate go run gen.go gen_trieval.go gen_ranges.go
+
+// Package bidi contains functionality for bidirectional text support.
+//
+// See https://www.unicode.org/reports/tr9.
+//
+// NOTE: UNDER CONSTRUCTION. This API may change in backwards incompatible ways
+// and without notice.
 package sdbidi
 
 import (
 	"bytes"
 	"fmt"
 )
+
+// This API tries to avoid dealing with embedding levels for now. Under the hood
+// these will be computed, but the question is to which extent the user should
+// know they exist. We should at some point allow the user to specify an
+// embedding hierarchy, though.
 
 // A Direction indicates the overall flow of text.
 type Direction int
@@ -292,12 +309,39 @@ func (r *Run) Pos() (start, end int) {
 // and returns the result. Modifiers will still follow the runes they modify.
 // Brackets are replaced with their counterparts.
 func AppendReverse(out, in []byte) []byte {
-	panic("unimplemented")
+	ret := make([]byte, len(in)+len(out))
+	copy(ret, out)
+	inRunes := bytes.Runes(in)
+
+	for i, r := range inRunes {
+		prop, _ := LookupRune(r)
+		if prop.IsBracket() {
+			inRunes[i] = prop.reverseBracket(r)
+		}
+	}
+
+	for i, j := 0, len(inRunes)-1; i < j; i, j = i+1, j-1 {
+		inRunes[i], inRunes[j] = inRunes[j], inRunes[i]
+	}
+	copy(ret[len(out):], string(inRunes))
+
+	return ret
 }
 
 // ReverseString reverses the order of characters in s and returns a new string.
 // Modifiers will still follow the runes they modify. Brackets are replaced with
 // their counterparts.
 func ReverseString(s string) string {
-	panic("unimplemented")
+	input := []rune(s)
+	li := len(input)
+	ret := make([]rune, li)
+	for i, r := range input {
+		prop, _ := LookupRune(r)
+		if prop.IsBracket() {
+			ret[li-i-1] = prop.reverseBracket(r)
+		} else {
+			ret[li-i-1] = r
+		}
+	}
+	return string(ret)
 }

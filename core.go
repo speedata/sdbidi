@@ -100,6 +100,8 @@ type paragraph struct {
 // rune (suggested is the rune of the open bracket for opening and matching
 // close brackets, after normalization). The embedding levels are optional, but
 // may be supplied to encode embedding levels of styled text.
+//
+// TODO: return an error.
 func newParagraph(types []Class, pairTypes []bracketType, pairValues []rune, levels level) (*paragraph, error) {
 	var err error
 	if err = validateTypes(types); err != nil {
@@ -125,7 +127,7 @@ func newParagraph(types []Class, pairTypes []bracketType, pairValues []rune, lev
 		resultTypes: append([]Class(nil), types...),
 	}
 	p.run()
-	return p, err
+	return p, nil
 }
 
 func (p *paragraph) Len() int { return len(p.initialTypes) }
@@ -425,7 +427,7 @@ type isolatingRunSequence struct {
 	sos, eos       Class
 }
 
-func (s *isolatingRunSequence) Len() int { return len(s.indexes) }
+func (i *isolatingRunSequence) Len() int { return len(i.indexes) }
 
 func maxLevel(a, b level) level {
 	if a > b {
